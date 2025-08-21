@@ -95,7 +95,7 @@ def post_to_x(text):
     import base64, requests
     basic = base64.b64encode(f"{TW_CLIENT_ID}:{TW_CLIENT_SECRET}".encode()).decode()
 
-    # refresh -> access
+    # refresh -> access ここで scope を必ず付ける！
     r = requests.post(
         "https://api.twitter.com/2/oauth2/token",
         headers={
@@ -105,7 +105,9 @@ def post_to_x(text):
         data={
             "grant_type": "refresh_token",
             "refresh_token": TW_REFRESH_TOKEN,
-            "client_id": TW_CLIENT_ID,   # 明示（環境で必要になるケースがある）
+            "client_id": TW_CLIENT_ID,
+            # 👇 これを追加
+            "scope": "tweet.read tweet.write users.read offline.access",
         },
         timeout=25,
     )
@@ -124,6 +126,7 @@ def post_to_x(text):
         print("X POST ERROR:", r2.status_code, r2.text)
         r2.raise_for_status()
     return r2.json().get("data")
+
 
 
 def main():

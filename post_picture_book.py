@@ -92,45 +92,42 @@ def build_post(book):
     return f"{body}\n{book['url']}"
 
 def post_to_x(text):
-    import base64, requests, json, sys
+    import requests, base64
 
     basic = base64.b64encode(f"{TW_CLIENT_ID}:{TW_CLIENT_SECRET}".encode()).decode()
 
     # 1) refresh_token -> access_token
     r = requests.post(
         "https://api.twitter.com/2/oauth2/token",
+        headers={
+            "Authorization": f"Basic {basic}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
         data={
             "grant_type": "refresh_token",
-            "client_id": TW_CLIENT_ID,
             "refresh_token": TW_REFRESH_TOKEN,
-        },
-        headers={
-            "Authorization": f"Basic {basic}",  # 機密クライアントならOK
-            "Content-Type": "application/x-www-form-urlencoded",
+            "client_id": TW_CLIENT_ID,          # ★ これも入れる
         },
         timeout=25,
     )
     if r.status_code != 200:
-        print("X TOKEN ERROR:", r.status_code, r.text)  # ★本文を見る
+        print("X TOKEN ERROR:", r.status_code, r.text)  # 本文を出す
         r.raise_for_status()
-
     payload = r.json()
     access_token = payload["access_token"]
+
+    # （必要ならここで payload.get("refresh_token") をSecretsに反映する仕組みを後で入れる）
 
     # 2) 投稿
     r2 = requests.post(
         "https://api.twitter.com/2/tweets",
         json={"text": text},
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
-        },
+        headers={"Authorization": f"Bearer {access_token}"},
         timeout=25,
     )
     if r2.status_code >= 300:
-        print("X POST ERROR:", r2.status_code, r2.text)  # ★本文を見る
+        print("X POST ERROR:", r2.status_code, r2.text)
         r2.raise_for_status()
-
     return r2.json().get("data")
 
 def main():

@@ -9,30 +9,60 @@ TW_CLIENT_SECRET     = os.getenv("TW_CLIENT_SECRET")
 TW_REFRESH_TOKEN     = os.getenv("TW_REFRESH_TOKEN")
 
 def fetch_book():
-    url = "https://app.rakuten.co.jp/services/api/BooksBook/Search/20170404"
-    params = {
+    import random, re, requests
+
+    URL = "https://app.rakuten.co.jp/services/api/BooksBook/Search/20170404"
+
+    # まずは“確実に通る”最小構成（keyword ベース）
+    base_params = {
         "applicationId": RAKUTEN_APP_ID,
         "affiliateId":   RAKUTEN_AFFILIATE_ID,
-        "format":"json","formatVersion":2,
-        "booksGenreId":"001004001",  # 絵本
-        "availability":1,"outOfStockFlag":0,
-        "sort":"-reviewCount","hits":10,
-        "elements":"title,author,itemCaption,affiliateUrl,itemUrl,reviewAverage,reviewCount"
+        "format": "json",
+        "formatVersion": 2,
+        "hits": 20,
+        "availability": 1,           # 在庫あり
+        "sort": "-reviewCount",
+        "elements": "title,author,itemCaption,affiliateUrl,itemUrl,reviewAverage,reviewCount"
     }
-    r = requests.get(url, params=params, timeout=20); r.raise_for_status()
-    items = [it for it in r.json().get("Items", []) if it.get("itemCaption")]
-    it = random.choice(items)
-    url = it.get("affiliateUrl") or it.get("itemUrl")
-    caption = re.sub(r"\s+"," ", it.get("itemCaption","").strip())
-    return {
-        "title": it.get("title","").strip(),
-        "author": it.get("author","").strip(),
-        "caption": caption,
-        "ra": it.get("reviewAverage") or "",
-        "rc": it.get("reviewCount") or "",
-        "url": url
-    }
+    keywords = ["絵本", "児童書 絵本", "読み聞かせ", "赤ちゃん 絵本", "寝る前 絵本"]
 
+    # 1回目：keyword で叩く
+    params = dict(base_params, keyword=random.choice(keywords))
+    r = requests.get(URL, params=params, timeout=25)
+    if r.status_code != 200:
+        print("Rakuten API 1st call failed:", r.status_code, r.text)
+    try:
+        r.raise_for_status()
+        data = r.json()
+        items = [it for it in data.get("Items", []) if it.get("itemCaption")]
+    except Exception:
+        items = []
+
+    # 2回目リトライ：genre 指定（outOfStockFlag は入れない）
+    if not items:
+        params2 = dict(base_params, booksGenreId="001004001")  # 絵本
+        r2 = requests.get(URL, params=params2, timeout=25)
+        if r2.status_code != 200:
+            print("Rakuten API 2nd call failed:", r2.status_code, r2.text)
+        r2.raise_for_status()
+        data = r2.json()
+        items = [it for it in data.get("Items", []) if it.get("itemCaption")]
+
+    if not items:
+        raise RuntimeError("楽天API: itemCaption付きが0件（keyword/genre両方失敗）")
+
+    it = random.choice(items)
+    caption = re.sub(r"\s+", " ", (it.get("itemCaption") or "").strip())
+    link = it.get("affiliateUrl") or it.get("itemUrl")
+    return {
+        "title": (it.get("title") or "").strip(),
+        "author": (it.get("author") or "").strip(),
+        "caption": caption,
+        "url": link,
+        "ra": it.get("reviewAverage") or "",
+        "rc": it.get("reviewCount") or ""
+    }
+    
 def build_post(book):
     import openai
     openai.api_key = OPENAI_API_KEY

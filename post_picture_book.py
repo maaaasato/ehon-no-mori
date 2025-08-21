@@ -64,21 +64,31 @@ def fetch_book():
     }
     
 def build_post(book):
-    import openai
-    openai.api_key = OPENAI_API_KEY
-    sys = ("あなたは書店員。日本語でX向け紹介文を作る。本文は230字以内。"
-           "絵文字は1つまで、ハッシュタグは2つまで。温かく誠実に。"
-           "誰向け/どのシーンかを1フレーズ添える。URLは最後に別行で付与する前提。")
-    user = (f"書名:{book['title']}\n著者:{book['author']}\n"
+    from openai import OpenAI
+    client = OpenAI(api_key=OPENAI_API_KEY)
+
+    SYSTEM = ("あなたは書店員。日本語でX向け紹介文を作る。本文は230字以内、"
+              "絵文字1つまで、ハッシュタグ2つまで。温かく誠実に。"
+              "誰向け/どのシーンかを1フレーズ添える。URLは最後に別行で付ける前提。")
+
+    USER = (f"書名:{book['title']}\n著者:{book['author']}\n"
             f"紹介文の種:{book['caption']}\n平均レビュー:{book['ra']}\n"
-            f"レビュー件数:{book['rc']}\n")
-    resp = openai.ChatCompletion.create(
+            f"レビュー件数:{book['rc']}")
+
+    resp = client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=[{"role":"system","content":sys},{"role":"user","content":user}],
-        temperature=0.7, max_tokens=220)
+        messages=[
+            {"role": "system", "content": SYSTEM},
+            {"role": "user", "content": USER},
+        ],
+        temperature=0.7,
+        max_tokens=220,
+    )
+
     body = resp.choices[0].message.content.strip()
-    body = re.sub(r"\s+"," ", body)
-    if len(body) > 230: body = body[:229].rstrip()+"…"
+    body = re.sub(r"\s+", " ", body)
+    if len(body) > 230:
+        body = body[:229].rstrip() + "…"
     return f"{body}\n{book['url']}"
 
 def post_to_x(text):

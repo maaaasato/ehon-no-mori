@@ -92,10 +92,9 @@ def build_post(book):
     return f"{body}\n{book['url']}"
 
 def post_to_x(text):
-    import base64, requests
+    import base64, requests, os
     basic = base64.b64encode(f"{TW_CLIENT_ID}:{TW_CLIENT_SECRET}".encode()).decode()
 
-    # refresh -> access ここで scope を必ず付ける！
     r = requests.post(
         "https://api.twitter.com/2/oauth2/token",
         headers={
@@ -106,7 +105,7 @@ def post_to_x(text):
             "grant_type": "refresh_token",
             "refresh_token": TW_REFRESH_TOKEN,
             "client_id": TW_CLIENT_ID,
-            # 👇 これを追加
+            # 重要：必ず付ける
             "scope": "tweet.read tweet.write users.read offline.access",
         },
         timeout=25,
@@ -114,7 +113,19 @@ def post_to_x(text):
     if r.status_code != 200:
         print("X TOKEN ERROR:", r.status_code, r.text)
         r.raise_for_status()
-    access_token = r.json()["access_token"]
+    token_payload = r.json()
+    access_token = token_payload["access_token"]
+    new_refresh = token_payload.get("refresh_token")  # ← ここで新しい refresh を拾う
+
+    # もし新しい refresh_token が返ってきたら GITHUB_OUTPUT に書く
+    # （後続ステップで Secret を更新するため）
+    try:
+        if new_refresh and "GITHUB_OUTPUT" in os.environ:
+            with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+                print(f"new_refresh_token={new_refresh}", file=f)
+    except Exception as e:
+        # ここで失敗しても投稿自体は続行できるように握りつぶす
+        print("WARN: failed to write new_refresh_token to GITHUB_OUTPUT:", e)
 
     r2 = requests.post(
         "https://api.twitter.com/2/tweets",

@@ -92,11 +92,10 @@ def build_post(book):
     return f"{body}\n{book['url']}"
 
 def post_to_x(text):
-    import requests, base64
-
+    import base64, requests
     basic = base64.b64encode(f"{TW_CLIENT_ID}:{TW_CLIENT_SECRET}".encode()).decode()
 
-    # 1) refresh_token -> access_token
+    # refresh -> access
     r = requests.post(
         "https://api.twitter.com/2/oauth2/token",
         headers={
@@ -106,19 +105,15 @@ def post_to_x(text):
         data={
             "grant_type": "refresh_token",
             "refresh_token": TW_REFRESH_TOKEN,
-            "client_id": TW_CLIENT_ID,          # ★ これも入れる
+            "client_id": TW_CLIENT_ID,   # 明示（環境で必要になるケースがある）
         },
         timeout=25,
     )
     if r.status_code != 200:
-        print("X TOKEN ERROR:", r.status_code, r.text)  # 本文を出す
+        print("X TOKEN ERROR:", r.status_code, r.text)
         r.raise_for_status()
-    payload = r.json()
-    access_token = payload["access_token"]
+    access_token = r.json()["access_token"]
 
-    # （必要ならここで payload.get("refresh_token") をSecretsに反映する仕組みを後で入れる）
-
-    # 2) 投稿
     r2 = requests.post(
         "https://api.twitter.com/2/tweets",
         json={"text": text},
@@ -129,6 +124,7 @@ def post_to_x(text):
         print("X POST ERROR:", r2.status_code, r2.text)
         r2.raise_for_status()
     return r2.json().get("data")
+
 
 def main():
     b = fetch_book()

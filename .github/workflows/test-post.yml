@@ -1,19 +1,53 @@
 name: test-post
+
 on:
-  workflow_dispatch: {}   # 手動実行
+  workflow_dispatch:
+
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # ここに環境変数（Secrets）とログ即時出力をまとめて定義
+    env:
+      RAKUTEN_APP_ID:       ${{ secrets.RAKUTEN_APP_ID }}
+      RAKUTEN_AFFILIATE_ID: ${{ secrets.RAKUTEN_AFFILIATE_ID }}
+      OPENAI_API_KEY:       ${{ secrets.OPENAI_API_KEY }}
+      TW_CLIENT_ID:         ${{ secrets.TW_CLIENT_ID }}
+      TW_CLIENT_SECRET:     ${{ secrets.TW_CLIENT_SECRET }}
+      TW_REFRESH_TOKEN:     ${{ secrets.TW_REFRESH_TOKEN }}
+      PYTHONUNBUFFERED: '1'   # ログをその場で出す（重要）
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
-      - run: pip install requests openai
-      - env:
-          RAKUTEN_APP_ID:       ${{ secrets.RAKUTEN_APP_ID }}
-          RAKUTEN_AFFILIATE_ID: ${{ secrets.RAKUTEN_AFFILIATE_ID }}
-          OPENAI_API_KEY:       ${{ secrets.OPENAI_API_KEY }}
-          TW_CLIENT_ID:         ${{ secrets.TW_CLIENT_ID }}
-          TW_CLIENT_SECRET:     ${{ secrets.TW_CLIENT_SECRET }}
-          TW_REFRESH_TOKEN:     ${{ secrets.TW_REFRESH_TOKEN }}
-        run: python post_picture_book.py
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'          # pip キャッシュで速く＆安定
+
+      - name: Install dependencies
+        run: |
+          python -V
+          python -m pip install --upgrade pip
+          pip install "requests>=2.31" "openai>=1.40.0"
+
+      - name: Sanity-check secrets
+        run: |
+          python - <<'PY'
+          import os, sys
+          need = [
+            "RAKUTEN_APP_ID","RAKUTEN_AFFILIATE_ID","OPENAI_API_KEY",
+            "TW_CLIENT_ID","TW_CLIENT_SECRET","TW_REFRESH_TOKEN"
+          ]
+          missing = [k for k in need if not os.getenv(k)]
+          if missing:
+            print("Missing secrets/env:", ", ".join(missing))
+            sys.exit(1)
+          print("All required secrets are present.")
+          PY
+
+      - name: Run script
+        run: python -u post_picture_book.py   # -u でも即時ログ

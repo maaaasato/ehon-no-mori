@@ -92,22 +92,46 @@ def build_post(book):
     return f"{body}\n{book['url']}"
 
 def post_to_x(text):
-    import base64
+    import base64, requests, json, sys
+
     basic = base64.b64encode(f"{TW_CLIENT_ID}:{TW_CLIENT_SECRET}".encode()).decode()
-    # refresh → access_token
-    r = requests.post("https://api.twitter.com/2/oauth2/token",
-        data={"grant_type":"refresh_token","client_id":TW_CLIENT_ID,"refresh_token":TW_REFRESH_TOKEN},
-        headers={"Authorization":f"Basic {basic}","Content-Type":"application/x-www-form-urlencoded"},
-        timeout=20)
-    r.raise_for_status()
-    access_token = r.json()["access_token"]
-    # post
-    r = requests.post("https://api.twitter.com/2/tweets",
-        json={"text":text},
-        headers={"Authorization":f"Bearer {access_token}","Content-Type":"application/json"},
-        timeout=20)
-    r.raise_for_status()
-    return r.json()
+
+    # 1) refresh_token -> access_token
+    r = requests.post(
+        "https://api.twitter.com/2/oauth2/token",
+        data={
+            "grant_type": "refresh_token",
+            "client_id": TW_CLIENT_ID,
+            "refresh_token": TW_REFRESH_TOKEN,
+        },
+        headers={
+            "Authorization": f"Basic {basic}",  # 機密クライアントならOK
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        timeout=25,
+    )
+    if r.status_code != 200:
+        print("X TOKEN ERROR:", r.status_code, r.text)  # ★本文を見る
+        r.raise_for_status()
+
+    payload = r.json()
+    access_token = payload["access_token"]
+
+    # 2) 投稿
+    r2 = requests.post(
+        "https://api.twitter.com/2/tweets",
+        json={"text": text},
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
+        timeout=25,
+    )
+    if r2.status_code >= 300:
+        print("X POST ERROR:", r2.status_code, r2.text)  # ★本文を見る
+        r2.raise_for_status()
+
+    return r2.json().get("data")
 
 def main():
     b = fetch_book()

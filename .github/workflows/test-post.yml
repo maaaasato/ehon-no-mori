@@ -14,16 +14,14 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-          cache: "pip"
+          python-version: "3.11"   # ← cache は付けない
 
       - name: Show versions
         run: |
           python --version
           pip --version
-          uname -a
 
-      - name: Install deps (force)
+      - name: Install deps
         run: |
           python -m pip install -U pip
           pip install requests openai
@@ -37,5 +35,4 @@ jobs:
           TW_CLIENT_SECRET:     ${{ secrets.TW_CLIENT_SECRET }}
           TW_REFRESH_TOKEN:     ${{ secrets.TW_REFRESH_TOKEN }}
         run: |
-          set -x
           python -u post_picture_book.py

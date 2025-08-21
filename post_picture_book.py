@@ -1,0 +1,80 @@
+import os, re, random, requests
+
+RAKUTEN_APP_ID       = os.getenv("RAKUTEN_APP_ID")
+RAKUTEN_AFFILIATE_ID = os.getenv("RAKUTEN_AFFILIATE_ID")
+OPENAI_API_KEY       = os.getenv("OPENAI_API_KEY")
+
+TW_CLIENT_ID         = os.getenv("TW_CLIENT_ID")
+TW_CLIENT_SECRET     = os.getenv("TW_CLIENT_SECRET")
+TW_REFRESH_TOKEN     = os.getenv("TW_REFRESH_TOKEN")
+
+def fetch_book():
+    url = "https://app.rakuten.co.jp/services/api/BooksBook/Search/20170404"
+    params = {
+        "applicationId": RAKUTEN_APP_ID,
+        "affiliateId":   RAKUTEN_AFFILIATE_ID,
+        "format":"json","formatVersion":2,
+        "booksGenreId":"001004001",  # 絵本
+        "availability":1,"outOfStockFlag":0,
+        "sort":"-reviewCount","hits":10,
+        "elements":"title,author,itemCaption,affiliateUrl,itemUrl,reviewAverage,reviewCount"
+    }
+    r = requests.get(url, params=params, timeout=20); r.raise_for_status()
+    items = [it for it in r.json().get("Items", []) if it.get("itemCaption")]
+    it = random.choice(items)
+    url = it.get("affiliateUrl") or it.get("itemUrl")
+    caption = re.sub(r"\s+"," ", it.get("itemCaption","").strip())
+    return {
+        "title": it.get("title","").strip(),
+        "author": it.get("author","").strip(),
+        "caption": caption,
+        "ra": it.get("reviewAverage") or "",
+        "rc": it.get("reviewCount") or "",
+        "url": url
+    }
+
+def build_post(book):
+    import openai
+    openai.api_key = OPENAI_API_KEY
+    sys = ("あなたは書店員。日本語でX向け紹介文を作る。本文は230字以内。"
+           "絵文字は1つまで、ハッシュタグは2つまで。温かく誠実に。"
+           "誰向け/どのシーンかを1フレーズ添える。URLは最後に別行で付与する前提。")
+    user = (f"書名:{book['title']}\n著者:{book['author']}\n"
+            f"紹介文の種:{book['caption']}\n平均レビュー:{book['ra']}\n"
+            f"レビュー件数:{book['rc']}\n")
+    resp = openai.ChatCompletion.create(
+        model="gpt-4o-mini",
+        messages=[{"role":"system","content":sys},{"role":"user","content":user}],
+        temperature=0.7, max_tokens=220)
+    body = resp.choices[0].message.content.strip()
+    body = re.sub(r"\s+"," ", body)
+    if len(body) > 230: body = body[:229].rstrip()+"…"
+    return f"{body}\n{book['url']}"
+
+def post_to_x(text):
+    import base64
+    basic = base64.b64encode(f"{TW_CLIENT_ID}:{TW_CLIENT_SECRET}".encode()).decode()
+    # refresh → access_token
+    r = requests.post("https://api.twitter.com/2/oauth2/token",
+        data={"grant_type":"refresh_token","client_id":TW_CLIENT_ID,"refresh_token":TW_REFRESH_TOKEN},
+        headers={"Authorization":f"Basic {basic}","Content-Type":"application/x-www-form-urlencoded"},
+        timeout=20)
+    r.raise_for_status()
+    access_token = r.json()["access_token"]
+    # post
+    r = requests.post("https://api.twitter.com/2/tweets",
+        json={"text":text},
+        headers={"Authorization":f"Bearer {access_token}","Content-Type":"application/json"},
+        timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+def main():
+    b = fetch_book()
+    text = build_post(b)
+    print("POST PREVIEW:\n", text)
+    res = post_to_x(text)
+    print("POSTED:", res.get("data"))
+
+if __name__ == "__main__":
+    main()

@@ -21,7 +21,7 @@ def fetch_book():
         "formatVersion": 2,
         "hits": 20,
         "availability": 1,           # 在庫あり
-        "sort": "-reviewCount",
+        "sort": "reviewCount",
         "elements": "title,author,itemCaption,affiliateUrl,itemUrl,reviewAverage,reviewCount"
     }
     keywords = ["絵本", "児童書 絵本", "読み聞かせ", "赤ちゃん 絵本", "寝る前 絵本"]

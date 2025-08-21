@@ -42,8 +42,10 @@ def require_env(name: str) -> str:
     return v
 
 def safe_get(d: Dict[str, Any], key: str, default: str = "") -> str:
-    v = d.get(key)
-    return (v or "").strip()
+    v = d.get(key, default)
+    if v is None:
+        return ""
+    return str(v).strip()
 
 # -------- 楽天API --------
 def fetch_book() -> Dict[str, str]:

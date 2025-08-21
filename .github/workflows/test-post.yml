@@ -1,0 +1,19 @@
+name: test-post
+on:
+  workflow_dispatch: {}   # 手動実行
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install requests openai
+      - env:
+          RAKUTEN_APP_ID:       ${{ secrets.RAKUTEN_APP_ID }}
+          RAKUTEN_AFFILIATE_ID: ${{ secrets.RAKUTEN_AFFILIATE_ID }}
+          OPENAI_API_KEY:       ${{ secrets.OPENAI_API_KEY }}
+          TW_CLIENT_ID:         ${{ secrets.TW_CLIENT_ID }}
+          TW_CLIENT_SECRET:     ${{ secrets.TW_CLIENT_SECRET }}
+          TW_REFRESH_TOKEN:     ${{ secrets.TW_REFRESH_TOKEN }}
+        run: python post_picture_book.py

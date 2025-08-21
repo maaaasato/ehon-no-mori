@@ -1,32 +1,21 @@
 name: test-post
-on:
-  workflow_dispatch: {}
+on: { workflow_dispatch: {} }
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    env:
-      PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"   # ← cache は付けない
+          python-version: "3.11"
 
-      - name: Show versions
-        run: |
-          python --version
-          pip --version
+      - run: pip install requests openai
 
-      - name: Install deps
-        run: |
-          python -m pip install -U pip
-          pip install requests openai
-
+      # Python を実行。ここで GITHUB_OUTPUT に new_refresh_token が書かれる
       - name: Run script
+        id: post
         env:
           RAKUTEN_APP_ID:       ${{ secrets.RAKUTEN_APP_ID }}
           RAKUTEN_AFFILIATE_ID: ${{ secrets.RAKUTEN_AFFILIATE_ID }}
@@ -34,5 +23,13 @@ jobs:
           TW_CLIENT_ID:         ${{ secrets.TW_CLIENT_ID }}
           TW_CLIENT_SECRET:     ${{ secrets.TW_CLIENT_SECRET }}
           TW_REFRESH_TOKEN:     ${{ secrets.TW_REFRESH_TOKEN }}
+        run: python post_picture_book.py
+
+      # 返ってきた new_refresh_token があれば Secrets を更新
+      - name: Update TW_REFRESH_TOKEN secret (if rotated)
+        if: steps.post.outputs.new_refresh_token != ''
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}   # repo スコープの PAT
         run: |
-          python -u post_picture_book.py
+          echo "Rotating TW_REFRESH_TOKEN..."
+          gh secret set TW_REFRESH_TOKEN --body "${{ steps.post.outputs.new_refresh_token }}"

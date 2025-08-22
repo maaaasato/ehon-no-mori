@@ -50,9 +50,8 @@ def safe_get(d: Dict[str, Any], key: str, default: str = "") -> str:
 # -------- 楽天API --------
 def fetch_book() -> Dict[str, str]:
     """
-    楽天ブックスAPIから itemCaption 付きのアイテムを1件返す。
-    1回目: keyword
-    2回目: 絵本ジャンル指定
+    楽天ブックスAPIから《絵本ジャンルのみ》で itemCaption 付きのアイテムを1件返す。
+    ランダムページ×数回トライで偏りを避ける。
     """
     URL = "https://app.rakuten.co.jp/services/api/BooksBook/Search/20170404"
 
@@ -63,52 +62,44 @@ def fetch_book() -> Dict[str, str]:
         "formatVersion": 2,
         "hits": 20,
         "availability": 1,                 # 在庫あり
-        "booksGenreId": "001020004",
-        "sort": "reviewCount",
+        "booksGenreId": "001004001",       # ← 絵本に固定！
         "elements": "title,author,itemCaption,affiliateUrl,itemUrl,reviewAverage,reviewCount",
+        "sort": "reviewCount",             # 並びは任意。安定させる
     }
-    #keywords = ["絵本", "児童書 絵本", "読み聞かせ", "赤ちゃん 絵本", "寝る前 絵本"]
 
     s = requests.Session()
     s.headers.update({"User-Agent": USER_AGENT, "Accept": "application/json"})
 
-    def pick_items(params: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def pick_items(page: int) -> List[Dict[str, Any]]:
+        params = dict(base_params, page=page)
         r = s.get(URL, params=params, timeout=25)
         if r.status_code != 200:
             log("Rakuten API error:", r.status_code, r.text[:500])
         r.raise_for_status()
         data = r.json()
-        items = [it.get("Item") or it for it in data.get("Items", [])]  # v2は {Items:[{Item:{...}}]} のこともある
+        items = [it.get("Item") or it for it in data.get("Items", [])]
+        # itemCaption が空の本は弾く
         return [it for it in items if (it.get("itemCaption") or "").strip()]
 
-    # 1回目: keyword
-    items: List[Dict[str, Any]] = []
-    try:
-        params1 = dict(base_params, keyword=random.choice(keywords))
-        items = pick_items(params1)
-    except Exception as e:
-        log("Rakuten 1st call failed:", e)
+    # ランダムページで数回トライ
+    for _ in range(6):
+        page = random.randint(1, 50)  # 上限は適宜（多すぎたら自然に空→再トライ）
+        items = pick_items(page)
+        if items:
+            it = random.choice(items)
+            caption = re.sub(r"\s+", " ", safe_get(it, "itemCaption"))
+            link = it.get("affiliateUrl") or it.get("itemUrl")
+            return {
+                "title":  safe_get(it, "title"),
+                "author": safe_get(it, "author"),
+                "caption": caption,
+                "url": link or "",
+                "ra": safe_get(it, "reviewAverage"),
+                "rc": safe_get(it, "reviewCount"),
+            }
 
-    # 2回目: ジャンル（絵本）指定でリトライ
-    if not items:
-        params2 = dict(base_params, booksGenreId="001004001")
-        items = pick_items(params2)
-
-    if not items:
-        raise RuntimeError("楽天API: itemCaption付きが0件（keyword/genre両方失敗）")
-
-    it = random.choice(items)
-    caption = re.sub(r"\s+", " ", safe_get(it, "itemCaption"))
-    link = it.get("affiliateUrl") or it.get("itemUrl")
-
-    return {
-        "title":  safe_get(it, "title"),
-        "author": safe_get(it, "author"),
-        "caption": caption,
-        "url": link or "",
-        "ra": safe_get(it, "reviewAverage"),
-        "rc": safe_get(it, "reviewCount"),
-    }
+    # 最後の保険（児童書全体→絵本）でも取れなければ落とす
+    raise RuntimeError("楽天API: 絵本ジャンルで itemCaption 付きが見つからない")
 
 # -------- OpenAI で本文生成 --------
 def build_post(book: Dict[str, str]) -> str:

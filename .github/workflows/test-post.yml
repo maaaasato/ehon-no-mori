@@ -15,7 +15,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - run: pip install requests openai
+      - run: pip install requests openai beautifulsoup4 lxml
 
       # Python を実行。ここで GITHUB_OUTPUT に new_refresh_token が書かれる
       - name: Run script

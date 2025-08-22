@@ -1,6 +1,10 @@
 name: test-post
 on: { workflow_dispatch: {} }
 
+permissions:
+  actions: write
+  contents: read
+  
 jobs:
   run:
     runs-on: ubuntu-latest

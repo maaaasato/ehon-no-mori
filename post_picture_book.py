@@ -1,17 +1,14 @@
 # post_picture_book.py
-# - 絵本ナビのランダムページから題名を取得
-# - その題名で楽天ブックスAPI(絵本ジャンル)を検索して商品情報を取得
-# - OpenAIで短文本文（<=140字・最大2文）を生成
-# - Xに投稿（refresh_tokenローテーション時はGITHUB_OUTPUTに出力）
+# - 絵本ナビ: ランダムIDでページ取得 → 題名抽出（エンコード自動判別）
+# - 「その他・一般書」など一般書カテゴリはスキップ
+# - 題名で楽天ブックスAPI(絵本ジャンル)を検索 → 見つからなければ楽天側ランダム
+# - 本文は <=140字・最大2文、改行の次行にアフィリンク
+# - X投稿（refresh_tokenのローテ時はGITHUB_OUTPUTへ new_refresh_token= を出力）
 #
-# 必須env:
-#   RAKUTEN_APP_ID, RAKUTEN_AFFILIATE_ID
-#   OPENAI_API_KEY
-#   TW_CLIENT_ID, TW_CLIENT_SECRET, TW_REFRESH_TOKEN
-#
-# 任意env:
-#   EHONNAVI_ID_RANGE: "1-400000" のようにランダムID範囲を指定（不明なら既定のまま）
-#   EHONNAVI_TRIES: 何回までランダム探索するか（既定: 15）
+# 必須env: RAKUTEN_APP_ID, RAKUTEN_AFFILIATE_ID, OPENAI_API_KEY,
+#          TW_CLIENT_ID, TW_CLIENT_SECRET, TW_REFRESH_TOKEN
+# 任意env: EHONNAVI_ID_RANGE="1-400000", EHONNAVI_TRIES="20"
+# 依存: requests, beautifulsoup4, lxml, openai
 
 from __future__ import annotations
 import os, re, json, random, base64
@@ -20,12 +17,18 @@ import requests
 from bs4 import BeautifulSoup
 from difflib import SequenceMatcher
 
-USER_AGENT = "ehon-no-mori-bot/3.0 (+https://github.com/)"
+USER_AGENT = "ehon-no-mori-bot/3.1 (+https://github.com/)"
 MAX_BODY = 140
-GENRE_PICTURE = os.getenv("RAKUTEN_GENRE_PICTURE", "001020004")  # 絵本
+GENRE_PICTURE = os.getenv("RAKUTEN_GENRE_PICTURE", "001020004")  # 楽天: 絵本
 
-# 文庫/新書/漫画など除外
-NG_WORDS = [
+# 一般書/紛れ込み除外キーワード（Ehonnavi側のページ判定に使用）
+EHONNAVI_BLOCK = [
+    "その他・一般書", "一般書", "問題集", "資格", "検定", "参考書", "実用書",
+    "ライトノベル", "ノベル", "小説", "ビジネス", "自己啓発"
+]
+
+# 楽天側の除外（文庫/新書/コミック等）
+NG_WORDS_RAKUTEN = [
     "文庫", "新書", "児童文学", "小説", "ノベル", "ラノベ",
     "コミック", "漫画", "マンガ", "ムック",
     "青い鳥文庫", "つばさ文庫", "みらい文庫", "ポケット文庫",
@@ -43,24 +46,51 @@ def safe_get(d: Dict[str, Any], key: str, default: str = "") -> str:
     if v is None: return ""
     return str(v).strip()
 
-# ---------------- 絵本ナビから題名を拾う ----------------
+# ------------------------------------------------------------
+# 文字化け対策：バイト列を複数エンコーディングでデコード
+# ------------------------------------------------------------
+def decode_html_bytes(b: bytes, apparent: Optional[str]) -> str:
+    tried = []
+    # requests の推定を最優先
+    if apparent: tried.append(apparent)
+    tried += ["utf-8", "utf-8-sig", "cp932", "shift_jis", "euc_jp", "iso2022_jp"]
+    for enc in tried:
+        try:
+            return b.decode(enc)
+        except Exception:
+            continue
+    return b.decode("utf-8", errors="ignore")
 
-def parse_title_from_ehonnavi_html(html: str) -> Optional[str]:
+# ------------------------------------------------------------
+# 絵本ナビ: タイトル抽出＋カテゴリ判定
+# ------------------------------------------------------------
+def parse_ehonnavi(content_bytes: bytes, apparent: Optional[str]) -> Optional[Dict[str, str]]:
+    html = decode_html_bytes(content_bytes, apparent)
     soup = BeautifulSoup(html, "lxml")
-    # 1) og:title があれば最優先
+
+    # 「その他・一般書」などがページ内にあれば即スキップ
+    page_text_sample = soup.get_text(" ", strip=True)[:5000]
+    if any(w in page_text_sample for w in EHONNAVI_BLOCK):
+        return None
+
+    # 題名: og:title → <title> の順で取得
+    title = ""
     og = soup.find("meta", {"property": "og:title"})
-    title = og.get("content").strip() if og and og.get("content") else ""
-    # 2) <title> フォールバック
+    if og and og.get("content"): title = og["content"].strip()
     if not title and soup.title and soup.title.string:
         title = soup.title.string.strip()
-    if not title:
-        return None
-    # "｜絵本ナビ" 以降をカット
+    if not title: return None
+
+    # 「｜絵本ナビ」以降を落とし、余計な括弧情報を削る
     title = title.split("｜絵本ナビ", 1)[0].strip()
-    # 余計な空白や【 】（版型など）を軽く掃除
-    title = re.sub(r"\s+", " ", title)
-    title = re.sub(r"[（(].*?[)）]", "", title).strip()
-    return title or None
+    title = re.sub(r"[（(].*?[)）]", "", title)
+    title = re.sub(r"\s+", " ", title).strip()
+
+    # 題名が極端に短い／サイト名そのものなら捨てる
+    if not title or title in ("絵本ナビ",) or len(title) < 2:
+        return None
+
+    return {"title": title}
 
 def random_ehonnavi_title(session: requests.Session) -> Optional[Dict[str, str]]:
     rng = os.getenv("EHONNAVI_ID_RANGE", "1-400000")
@@ -68,8 +98,7 @@ def random_ehonnavi_title(session: requests.Session) -> Optional[Dict[str, str]]
         lo, hi = [int(x) for x in rng.split("-")]
     except Exception:
         lo, hi = 1, 400000
-    tries = int(os.getenv("EHONNAVI_TRIES", "15"))
-
+    tries = int(os.getenv("EHONNAVI_TRIES", "20"))
     BASE = "https://www.ehonnavi.net/ehon00.asp?no="
 
     for _ in range(tries):
@@ -79,47 +108,48 @@ def random_ehonnavi_title(session: requests.Session) -> Optional[Dict[str, str]]
             r = session.get(url, timeout=20)
         except Exception:
             continue
-        if r.status_code != 200:  # 404/500等はスキップ
+        if r.status_code != 200:
             continue
-        # 文字コードを推定しておく
-        if not r.encoding:
-            r.encoding = r.apparent_encoding or "utf-8"
-        title = parse_title_from_ehonnavi_html(r.text)
-        if title and len(title) >= 2 and title != "絵本ナビ":
-            return {"title": title, "navi_url": url}
+        picked = parse_ehonnavi(r.content, r.apparent_encoding)
+        if picked:
+            picked["navi_url"] = url
+            return picked
     return None
 
-# --------------- 楽天APIで題名検索（絵本だけ） ---------------
-
-def is_picture_book(it: Dict[str, Any]) -> bool:
+# ------------------------------------------------------------
+# 楽天API 検索（絵本ジャンル固定）
+# ------------------------------------------------------------
+def is_picture_book_rakuten(it: Dict[str, Any]) -> bool:
     t = (it.get("title") or "")
     c = (it.get("itemCaption") or "")
     series = (it.get("seriesName") or "")
     label  = (it.get("label") or "")
     size   = (it.get("size") or "")
     blob = " ".join([t, c, series, label, size])
-    return not any(kw in blob for kw in NG_WORDS)
+    return not any(kw in blob for kw in NG_WORDS_RAKUTEN)
 
 def best_match(items: List[Dict[str, Any]], target_title: str) -> Optional[Dict[str, Any]]:
-    # 題名の近さ + レビュー数の強さを適当に合成
     def score(it):
         t = safe_get(it, "title")
         sim = SequenceMatcher(None, t, target_title).ratio()
         rc = float(it.get("reviewCount") or 0)
         return sim * 0.8 + (min(rc, 1000) / 1000.0) * 0.2
-    if not items: return None
-    return sorted(items, key=score, reverse=True)[0]
+    return sorted(items, key=score, reverse=True)[0] if items else None
 
 def fetch_book() -> Dict[str, str]:
     URL = "https://app.rakuten.co.jp/services/api/BooksBook/Search/20170404"
 
     s = requests.Session()
-    s.headers.update({"User-Agent": USER_AGENT, "Accept": "text/html,application/json"})
+    s.headers.update({
+        "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/json",
+        "Accept-Language": "ja,en;q=0.8",
+    })
 
-    # 1) 絵本ナビから題名を得る（失敗したら後段で楽天ランダムへフォールバック）
+    # 1) 絵本ナビから題名
     picked = random_ehonnavi_title(s)
 
-    # 2) 楽天で検索
+    # 2) 題名で楽天検索
     def search_rakuten_by_title(title_kw: str) -> List[Dict[str, Any]]:
         base_params = {
             "applicationId": require_env("RAKUTEN_APP_ID"),
@@ -128,40 +158,35 @@ def fetch_book() -> Dict[str, str]:
             "formatVersion": 2,
             "hits": 30,
             "availability": 1,
-            "booksGenreId": GENRE_PICTURE,  # 絵本
-            "sort": "reviewCount",          # 許可値（降順）
+            "booksGenreId": GENRE_PICTURE,     # 絵本
+            "sort": "reviewCount",             # 有効値（降順）
             "elements": "title,author,itemCaption,affiliateUrl,itemUrl,reviewAverage,reviewCount,seriesName,label,size",
         }
-        items_all: List[Dict[str, Any]] = []
+        results: List[Dict[str, Any]] = []
 
-        # a) titleパラメータで厳しめ検索
-        params_title = dict(base_params, title=title_kw)
-        r = s.get(URL, params=params_title, timeout=25)
+        # 厳しめ: title= に当てる
+        r = s.get(URL, params=dict(base_params, title=title_kw), timeout=25)
         if r.status_code == 200:
             data = r.json()
-            items = [it.get("Item") or it for it in data.get("Items", [])]
-            items_all.extend(items)
+            results += [it.get("Item") or it for it in data.get("Items", [])]
 
-        # b) ダメなら keyword でも検索（表記ゆれ対策）
-        if not items_all:
-            params_kw = dict(base_params, keyword=title_kw)
-            r2 = s.get(URL, params=params_kw, timeout=25)
+        # ゆるめ: keyword= に当てる（表記ゆれ）
+        if not results:
+            r2 = s.get(URL, params=dict(base_params, keyword=title_kw), timeout=25)
             if r2.status_code == 200:
                 data2 = r2.json()
-                items2 = [it.get("Item") or it for it in data2.get("Items", [])]
-                items_all.extend(items2)
+                results += [it.get("Item") or it for it in data2.get("Items", [])]
 
         # 共通フィルタ
-        items_all = [it for it in items_all if (it.get("itemCaption") or "").strip()]
-        items_all = [it for it in items_all if is_picture_book(it)]
-        return items_all
+        results = [it for it in results if (it.get("itemCaption") or "").strip()]
+        results = [it for it in results if is_picture_book_rakuten(it)]
+        return results
 
     if picked:
-        title = picked["title"]
-        log("EhonNavi picked:", title, picked["navi_url"])
-        items = search_rakuten_by_title(title)
+        log("EhonNavi picked:", picked["title"], picked["navi_url"])
+        items = search_rakuten_by_title(picked["title"])
         if items:
-            it = best_match(items, title)
+            it = best_match(items, picked["title"])
             caption = re.sub(r"\s+", " ", safe_get(it, "itemCaption"))
             link = (it.get("affiliateUrl") or it.get("itemUrl") or "").strip()
             return {
@@ -175,7 +200,7 @@ def fetch_book() -> Dict[str, str]:
         else:
             log("Rakuten search by EhonNavi title failed; will fallback.")
 
-    # 3) フォールバック：楽天の絵本ジャンルをランダムに探索
+    # 3) フォールバック: 楽天絵本ジャンルからランダム
     base_params_fb = {
         "applicationId": require_env("RAKUTEN_APP_ID"),
         "affiliateId":   require_env("RAKUTEN_AFFILIATE_ID"),
@@ -196,11 +221,11 @@ def fetch_book() -> Dict[str, str]:
         data = r.json()
         items = [it.get("Item") or it for it in data.get("Items", [])]
         items = [it for it in items if (it.get("itemCaption") or "").strip()]
-        items = [it for it in items if is_picture_book(it)]
+        items = [it for it in items if is_picture_book_rakuten(it)]
         return items
 
-    for _ in range(10):
-        page = random.randint(1, 60)
+    for _ in range(12):
+        page = random.randint(1, 80)
         items = pick_page(page)
         if items:
             it = random.choice(items)
@@ -217,8 +242,9 @@ def fetch_book() -> Dict[str, str]:
 
     raise RuntimeError("楽天API: 絵本が見つかりません（EhonNavi→Rakutenともに失敗）")
 
-# ---------------- OpenAI で本文生成 ----------------
-
+# ------------------------------------------------------------
+# OpenAI で本文生成（<=140字・最大2文）
+# ------------------------------------------------------------
 def build_post(book: Dict[str, str]) -> str:
     from openai import OpenAI
     client = OpenAI(api_key=require_env("OPENAI_API_KEY"))
@@ -254,8 +280,9 @@ def build_post(book: Dict[str, str]) -> str:
         body = body[:MAX_BODY - 1].rstrip() + "…"
     return f"{body}\n{book['url']}" if book.get("url") else body
 
-# ---------------- X に投稿 ----------------
-
+# ------------------------------------------------------------
+# X投稿（refresh→access）
+# ------------------------------------------------------------
 def post_to_x(text: str) -> Dict[str, Any] | None:
     tw_client_id     = require_env("TW_CLIENT_ID")
     tw_client_secret = require_env("TW_CLIENT_SECRET")
@@ -297,8 +324,9 @@ def post_to_x(text: str) -> Dict[str, Any] | None:
         log("X POST ERROR:", r2.status_code, r2.text[:800]); r2.raise_for_status()
     return r2.json()
 
-# ---------------- main ----------------
-
+# ------------------------------------------------------------
+# main
+# ------------------------------------------------------------
 def main() -> None:
     for n in ["RAKUTEN_APP_ID","RAKUTEN_AFFILIATE_ID","OPENAI_API_KEY",
               "TW_CLIENT_ID","TW_CLIENT_SECRET","TW_REFRESH_TOKEN"]:

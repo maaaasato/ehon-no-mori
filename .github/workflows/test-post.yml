@@ -33,7 +33,7 @@ jobs:
       - name: Update TW_REFRESH_TOKEN secret (if rotated)
         if: steps.post.outputs.new_refresh_token != ''
         env:
-          GH_TOKEN: ${{ github.token }}   # repo スコープの PAT
+          GH_TOKEN: ${{ secrets.GH_PAT }}   # repo スコープの PAT
         run: |
           echo "Rotating TW_REFRESH_TOKEN..."
           gh auth status

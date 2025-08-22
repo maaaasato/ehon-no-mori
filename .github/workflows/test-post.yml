@@ -1,10 +1,11 @@
 name: test-post
-on: { workflow_dispatch: {} }
+on:
+  workflow_dispatch: {}
 
 permissions:
   actions: write
   contents: read
-  
+
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -15,9 +16,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      - run: pip install requests openai beautifulsoup4 lxml
+      - name: Install deps
+        run: pip install -U requests openai beautifulsoup4 lxml
 
-      # Python を実行。ここで GITHUB_OUTPUT に new_refresh_token が書かれる
+      # 実行（デバッグ環境変数は必要に応じて調整）
       - name: Run script
         id: post
         env:
@@ -27,13 +29,32 @@ jobs:
           TW_CLIENT_ID:         ${{ secrets.TW_CLIENT_ID }}
           TW_CLIENT_SECRET:     ${{ secrets.TW_CLIENT_SECRET }}
           TW_REFRESH_TOKEN:     ${{ secrets.TW_REFRESH_TOKEN }}
-        run: python post_picture_book.py
+          DEBUG: "1"
+          # 固定IDで検証したいときだけ一時的に使う（例: 138019）
+          # EHONNAVI_ID_FORCE: "138019"
+          # ランダム範囲や試行回数を変えたい場合
+          # EHONNAVI_ID_RANGE: "10000-400000"
+          # EHONNAVI_TRIES: "20"
+        run: |
+          python -u post_picture_book.py
+
+      # 解析用のデータを常に回収（存在しなければ無視）
+      - name: Upload debug artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-ehonnavi-rakuten
+          path: |
+            /tmp/ehonnavi_pick.html
+            /tmp/rakuten_search_title.json
+            /tmp/rakuten_search_keyword.json
+          if-no-files-found: ignore
 
       # 返ってきた new_refresh_token があれば Secrets を更新
       - name: Update TW_REFRESH_TOKEN secret (if rotated)
         if: steps.post.outputs.new_refresh_token != ''
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}   # repo スコープの PAT
+          GH_TOKEN: ${{ secrets.GH_PAT }}   # repo 権限の PAT（SSO 承認済み）
         run: |
           echo "Rotating TW_REFRESH_TOKEN..."
           gh auth status

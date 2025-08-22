@@ -47,8 +47,8 @@ def safe_get(d: Dict[str, Any], key: str, default: str = "") -> str:
     return str(v).strip()
 
 # -------- 楽天API（絵本のみ取得）--------
-# 楽天の絵本ジャンルID：001004001（※以前の 001020004 は別カテゴリなので不可）
-GENRE_PICTURE = os.getenv("RAKUTEN_GENRE_PICTURE", "001004001")
+# 楽天の絵本ジャンルID：001020004
+GENRE_PICTURE = os.getenv("RAKUTEN_GENRE_PICTURE", "001020004")
 
 # まぎれ込む児童小説や文庫・漫画を弾く
 NG_WORDS = [

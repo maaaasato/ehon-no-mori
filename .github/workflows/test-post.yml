@@ -1,14 +1,16 @@
 name: test-post
+
 on:
   workflow_dispatch: {}
 
 permissions:
   contents: read
-  actions: write   # ← Secret 更新で必要
+  actions: write   # Secret 更新に必要
 
 jobs:
   run:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -16,7 +18,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - run: pip install requests openai
+      - run: pip install "requests>=2.31.0" "openai>=1.35.0"
 
       - id: post
         env:
@@ -27,20 +29,12 @@ jobs:
           TW_CLIENT_SECRET:     ${{ secrets.TW_CLIENT_SECRET }}
           TW_REFRESH_TOKEN:     ${{ secrets.TW_REFRESH_TOKEN }}
         run: |
-          python - <<'PY'
-          # ここはあなたの post_picture_book.py の中身（new_refresh_token を stdout へ）
-          # 最後に new_refresh_token を出力したい時だけ print する。
-          # 出力例: print("NEW_REFRESH_TOKEN=xxxxx") など
-          PY
-
-      # もし上のステップで new_refresh_token を標準出力に流せない場合は
-      # python 側で GITHUB_OUTPUT に書く方式にして、
-      # `outputs:` で受け取ってください（下の uses 部には id.post.outputs... を指定）
+          python post_picture_book.py
 
       - name: Update TW_REFRESH_TOKEN secret (if rotated)
         if: ${{ steps.post.outputs.new_refresh_token != '' }}
         uses: peter-evans/create-or-update-secret@v3
         with:
-          token: ${{ github.token }}              # ← GITHUB_TOKEN でOK
+          token: ${{ github.token }}
           secret-name: TW_REFRESH_TOKEN
           secret-value: ${{ steps.post.outputs.new_refresh_token }}

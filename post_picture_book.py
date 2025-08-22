@@ -112,7 +112,7 @@ def is_picture_book_rakuten(it: Dict[str, Any]) -> bool:
         it.get("label") or "",
         it.get("size") or "",
     ])
-    return not any(kw in blob for kw in NG_WORDS_RAKUTEN])
+    return not any(kw in blob for kw in NG_WORDS_RAKUTEN)
 
 def best_match(items: List[Dict[str, Any]], target: str) -> Optional[Dict[str, Any]]:
     def score(it):

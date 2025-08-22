@@ -1,6 +1,6 @@
 # post_picture_book.py
 # - 楽天ブックスAPIで絵本を1冊取得
-# - OpenAIでX向け紹介文を生成（230字に整形）
+# - OpenAIでX向け紹介文を生成（短文）
 # - OAuth2 Refresh -> AccessでXに投稿
 # - 返ってきた refresh_token があれば GitHub Actions に渡す（GITHUB_OUTPUT）
 #
@@ -8,7 +8,7 @@
 # RAKUTEN_APP_ID, RAKUTEN_AFFILIATE_ID, OPENAI_API_KEY
 # TW_CLIENT_ID, TW_CLIENT_SECRET, TW_REFRESH_TOKEN
 #
-# 2025-08 版
+# 2025-08 版（絵本厳選＋短文化）
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ import re
 import json
 import random
 from typing import Dict, Any, List
-
 import requests
 
 # -------- 環境変数 --------
@@ -47,11 +46,28 @@ def safe_get(d: Dict[str, Any], key: str, default: str = "") -> str:
         return ""
     return str(v).strip()
 
-# -------- 楽天API --------
+# -------- 楽天API（絵本のみ取得）--------
+# 楽天の絵本ジャンルID：001004001（※以前の 001020004 は別カテゴリなので不可）
+GENRE_PICTURE = os.getenv("RAKUTEN_GENRE_PICTURE", "001004001")
+
+# まぎれ込む児童小説や文庫・漫画を弾く
+NG_WORDS = [
+    "文庫", "新書", "ノベル", "小説", "児童文学",
+    "コミック", "漫画", "マンガ", "ライトノベル",
+    "ポケット文庫", "ポプラポケット文庫"
+]
+
+def is_picture_book(it: Dict[str, Any]) -> bool:
+    t = (it.get("title") or "")
+    c = (it.get("itemCaption") or "")
+    if any(w in t or w in c for w in NG_WORDS):
+        return False
+    return True
+
 def fetch_book() -> Dict[str, str]:
     """
     楽天ブックスAPIから《絵本ジャンルのみ》で itemCaption 付きのアイテムを1件返す。
-    ランダムページ×数回トライで偏りを避ける。
+    ランダムページ×複数回で偏りを避ける。
     """
     URL = "https://app.rakuten.co.jp/services/api/BooksBook/Search/20170404"
 
@@ -60,52 +76,49 @@ def fetch_book() -> Dict[str, str]:
         "affiliateId":   require_env("RAKUTEN_AFFILIATE_ID"),
         "format": "json",
         "formatVersion": 2,
-        "hits": 20,
-        "availability": 1,                 # 在庫あり
-        "booksGenreId": "001020004",       # ← 絵本に固定！
+        "hits": 30,
+        "availability": 1,                  # 在庫あり
+        "booksGenreId": GENRE_PICTURE,      # ← 絵本に固定
         "elements": "title,author,itemCaption,affiliateUrl,itemUrl,reviewAverage,reviewCount",
-        "sort": "reviewCount",             # 並びは任意。安定させる
+        "sort": "reviewCount",              # レビュー数順
     }
 
     s = requests.Session()
     s.headers.update({"User-Agent": USER_AGENT, "Accept": "application/json"})
 
-    def pick_items(page: int) -> List[Dict[str, Any]]:
-        params = dict(base_params, page=page)
-        r = s.get(URL, params=params, timeout=25)
+    def list_items(page: int) -> List[Dict[str, Any]]:
+        r = s.get(URL, params=dict(base_params, page=page), timeout=25)
         if r.status_code != 200:
             log("Rakuten API error:", r.status_code, r.text[:500])
         r.raise_for_status()
         data = r.json()
         items = [it.get("Item") or it for it in data.get("Items", [])]
-        # itemCaption が空の本は弾く
-        return [it for it in items if (it.get("itemCaption") or "").strip()]
+        # キャプション必須＋NGワード除外
+        items = [it for it in items if (it.get("itemCaption") or "").strip()]
+        items = [it for it in items if is_picture_book(it)]
+        return items
 
-    # ランダムページで数回トライ
-    for _ in range(6):
-        page = random.randint(1, 50)  # 上限は適宜（多すぎたら自然に空→再トライ）
-        items = pick_items(page)
+    # ランダムページで8回まで試す
+    for _ in range(8):
+        page = random.randint(1, 60)
+        items = list_items(page)
         if items:
             it = random.choice(items)
             caption = re.sub(r"\s+", " ", safe_get(it, "itemCaption"))
-            link = it.get("affiliateUrl") or it.get("itemUrl")
+            link = (it.get("affiliateUrl") or it.get("itemUrl") or "").strip()
             return {
                 "title":  safe_get(it, "title"),
                 "author": safe_get(it, "author"),
                 "caption": caption,
-                "url": link or "",
+                "url": link,
                 "ra": safe_get(it, "reviewAverage"),
                 "rc": safe_get(it, "reviewCount"),
             }
 
-    # 最後の保険（児童書全体→絵本）でも取れなければ落とす
-    raise RuntimeError("楽天API: 絵本ジャンルで itemCaption 付きが見つからない")
+    raise RuntimeError("楽天API: 絵本ジャンルから取得できませんでした")
 
-# -------- OpenAI で本文生成 --------
+# -------- OpenAI で本文生成（短文・リンクが見える長さ）--------
 def build_post(book: Dict[str, str]) -> str:
-    """
-    X向け紹介文を生成（230字以内・絵文字1つ・ハッシュタグ2つまでを“目安”としてプロンプトで誘導）
-    """
     from openai import OpenAI
 
     client = OpenAI(api_key=require_env("OPENAI_API_KEY"))
@@ -139,8 +152,11 @@ def build_post(book: Dict[str, str]) -> str:
 
     body = resp.choices[0].message.content.strip()
     body = re.sub(r"\s+", " ", body)
-    if len(body) > 230:
-        body = body[:229].rstrip() + "…"
+
+    # ← ここを 140 に変更（リンクが確実に見える長さ）
+    MAX_BODY = 140
+    if len(body) > MAX_BODY:
+        body = body[:MAX_BODY - 1].rstrip() + "…"
 
     if book["url"]:
         return f"{body}\n{book['url']}"
@@ -148,10 +164,6 @@ def build_post(book: Dict[str, str]) -> str:
 
 # -------- X（Twitter）投稿 --------
 def post_to_x(text: str) -> Dict[str, Any] | None:
-    """
-    refresh_token を使って access_token を取得し投稿。
-    返ってきた refresh_token があれば GITHUB_OUTPUT に new_refresh_token= として書き出す。
-    """
     import base64
 
     tw_client_id     = require_env("TW_CLIENT_ID")
@@ -175,7 +187,6 @@ def post_to_x(text: str) -> Dict[str, Any] | None:
             "grant_type": "refresh_token",
             "refresh_token": tw_refresh_token,
             "client_id": tw_client_id,
-            # refresh でも scope を明示（Xの挙動に合わせる）
             "scope": "tweet.read tweet.write users.read offline.access",
         },
         timeout=25,
@@ -188,7 +199,7 @@ def post_to_x(text: str) -> Dict[str, Any] | None:
     access_token = token_payload["access_token"]
     new_refresh  = token_payload.get("refresh_token")
 
-    # 新しい refresh_token が返ってくる場合がある（ローテーション）
+    # 新しい refresh_token が返ってきたら GITHUB_OUTPUT へ
     if new_refresh:
         try:
             gh_out = os.environ.get("GITHUB_OUTPUT")
@@ -218,7 +229,6 @@ def post_to_x(text: str) -> Dict[str, Any] | None:
 
 # -------- main --------
 def main() -> None:
-    # 入力チェック（早期に気づけるよう最初に検証）
     for n in [
         "RAKUTEN_APP_ID",
         "RAKUTEN_AFFILIATE_ID",
@@ -236,7 +246,6 @@ def main() -> None:
 
     res = post_to_x(text)
     if res:
-        # API 仕様: {"data":{"id":"xxx","text":"..."}} が返る想定
         try:
             log("POSTED:", json.dumps(res.get("data", res), ensure_ascii=False))
         except Exception:

@@ -63,6 +63,7 @@ def fetch_book() -> Dict[str, str]:
         "formatVersion": 2,
         "hits": 20,
         "availability": 1,                 # 在庫あり
+        "booksGenreId": 001020004,
         "sort": "reviewCount",
         "elements": "title,author,itemCaption,affiliateUrl,itemUrl,reviewAverage,reviewCount",
     }
@@ -119,10 +120,14 @@ def build_post(book: Dict[str, str]) -> str:
     client = OpenAI(api_key=require_env("OPENAI_API_KEY"))
 
     SYSTEM = (
-        "あなたは書店員。日本語でX向け紹介文を作る。"
-        "本文は230字以内、絵文字は最大1つ、ハッシュタグは最大2つ。"
-        "温かく誠実に。誰向け/どのシーンかを1フレーズ添える。"
-        "URLは投稿側で最後に別行で付けるため、本文には含めない。"
+        "あなたは書店員。日本語でX向けの“短文”紹介文を作る。"
+        "制約: 本文は必ず140字以内（できれば120字）。文は最大2文。"
+        "絵文字は0〜1個、ハッシュタグは最大2つ。"
+        "URLは投稿側で最後に別行で付けるため、本文には入れない。"
+        "セールス臭は抑え、誠実で温かく。"
+        "読点や冗語を削り、体言止めや箇条書き風で簡潔に。"
+        "必ず誰向け/どのシーンかを1フレーズ添える。"
+        "出力は本文のみ。"
     )
     USER = (
         f"書名:{book['title']}\n"

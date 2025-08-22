@@ -1,36 +1,28 @@
 # post_picture_book.py
-# - 楽天ブックスAPIで絵本を1冊取得
-# - OpenAIでX向け紹介文を生成（短文）
-# - OAuth2 Refresh -> AccessでXに投稿
-# - 返ってきた refresh_token があれば GitHub Actions に渡す（GITHUB_OUTPUT）
+# - 楽天ブックスAPIから「絵本」だけを取得（文庫/新書/漫画などは除外）
+# - OpenAIで短い本文（<=140字・最大2文）を生成
+# - X(Twitter)へ投稿（refresh_token → access_token）
+# - refresh_token がローテーションされたら GITHUB_OUTPUT に書き出す
 #
-# 必要な環境変数:
-# RAKUTEN_APP_ID, RAKUTEN_AFFILIATE_ID, OPENAI_API_KEY
-# TW_CLIENT_ID, TW_CLIENT_SECRET, TW_REFRESH_TOKEN
+# 必須env:
+#   RAKUTEN_APP_ID, RAKUTEN_AFFILIATE_ID
+#   OPENAI_API_KEY
+#   TW_CLIENT_ID, TW_CLIENT_SECRET, TW_REFRESH_TOKEN
 #
-# 2025-08 版（絵本厳選＋短文化）
+# 2025-03 改訂版（アフィリンク固定・ジャンル厳格化）
 
 from __future__ import annotations
-
-import os
-import re
-import json
-import random
+import os, re, json, random, base64
 from typing import Dict, Any, List
 import requests
 
-# -------- 環境変数 --------
-RAKUTEN_APP_ID       = os.getenv("RAKUTEN_APP_ID")
-RAKUTEN_AFFILIATE_ID = os.getenv("RAKUTEN_AFFILIATE_ID")
-OPENAI_API_KEY       = os.getenv("OPENAI_API_KEY")
+# ------------------------------------------------------------
+# 定数/ユーティリティ
+# ------------------------------------------------------------
+USER_AGENT = "ehon-no-mori-bot/2.1 (+https://github.com/)"
+MAX_BODY = 140
+GENRE_PICTURE = os.getenv("RAKUTEN_GENRE_PICTURE", "001004001")  # 絵本ジャンルID
 
-TW_CLIENT_ID         = os.getenv("TW_CLIENT_ID")
-TW_CLIENT_SECRET     = os.getenv("TW_CLIENT_SECRET")
-TW_REFRESH_TOKEN     = os.getenv("TW_REFRESH_TOKEN")
-
-USER_AGENT = "ehon-no-mori-bot/1.0 (+https://github.com/)"
-
-# -------- ユーティリティ --------
 def log(*args: Any) -> None:
     print(*args, flush=True)
 
@@ -46,31 +38,33 @@ def safe_get(d: Dict[str, Any], key: str, default: str = "") -> str:
         return ""
     return str(v).strip()
 
-# -------- 楽天API（絵本のみ取得）--------
-# 楽天の絵本ジャンルID：001020004
-GENRE_PICTURE = os.getenv("RAKUTEN_GENRE_PICTURE", "001020004")
-
-# まぎれ込む児童小説や文庫・漫画を弾く
+# ------------------------------------------------------------
+# 絵本フィルタ（文庫/新書/コミック等を除外）
+# ------------------------------------------------------------
 NG_WORDS = [
-    "文庫", "新書", "ノベル", "小説", "児童文学",
-    "コミック", "漫画", "マンガ", "ライトノベル",
-    "ポケット文庫", "ポプラポケット文庫"
+    "文庫", "新書", "児童文学", "小説", "ノベル", "ラノベ",
+    "コミック", "漫画", "マンガ", "ムック",
+    "青い鳥文庫", "つばさ文庫", "みらい文庫", "ポケット文庫",
 ]
 
 def is_picture_book(it: Dict[str, Any]) -> bool:
+    # 楽天の分類ミス対策としてテキスト側も確認
     t = (it.get("title") or "")
     c = (it.get("itemCaption") or "")
-    if any(w in t or w in c for w in NG_WORDS):
-        return False
-    return True
+    series = (it.get("seriesName") or "")
+    label  = (it.get("label") or "")
+    size   = (it.get("size") or "")
+    blob = " ".join([t, c, series, label, size])
+    return not any(kw in blob for kw in NG_WORDS)
 
+# ------------------------------------------------------------
+# 楽天API：絵本のみ取得（アフィリンク固定）
+# ------------------------------------------------------------
 def fetch_book() -> Dict[str, str]:
     """
     楽天ブックスAPIから《絵本ジャンルのみ》で itemCaption 付きのアイテムを1件返す。
-    ランダムページ×複数回で偏りを避ける。
     """
     URL = "https://app.rakuten.co.jp/services/api/BooksBook/Search/20170404"
-
     base_params = {
         "applicationId": require_env("RAKUTEN_APP_ID"),
         "affiliateId":   require_env("RAKUTEN_AFFILIATE_ID"),
@@ -78,33 +72,35 @@ def fetch_book() -> Dict[str, str]:
         "formatVersion": 2,
         "hits": 30,
         "availability": 1,                  # 在庫あり
-        "booksGenreId": GENRE_PICTURE,      # ← 絵本に固定
-        "elements": "title,author,itemCaption,affiliateUrl,itemUrl,reviewAverage,reviewCount",
-        "sort": "reviewCount",              # レビュー数順
+        "booksGenreId": GENRE_PICTURE,      # 絵本に固定
+        "sort": "-reviewCount",             # レビュー多い順（降順）
+        # フィルタ用に項目拡張
+        "elements": "title,author,itemCaption,affiliateUrl,itemUrl,reviewAverage,reviewCount,seriesName,label,size",
     }
 
     s = requests.Session()
     s.headers.update({"User-Agent": USER_AGENT, "Accept": "application/json"})
 
-    def list_items(page: int) -> List[Dict[str, Any]]:
+    def pick_page(page: int) -> List[Dict[str, Any]]:
         r = s.get(URL, params=dict(base_params, page=page), timeout=25)
         if r.status_code != 200:
             log("Rakuten API error:", r.status_code, r.text[:500])
         r.raise_for_status()
         data = r.json()
         items = [it.get("Item") or it for it in data.get("Items", [])]
-        # キャプション必須＋NGワード除外
+        # キャプション必須＋絵本フィルタ
         items = [it for it in items if (it.get("itemCaption") or "").strip()]
         items = [it for it in items if is_picture_book(it)]
         return items
 
-    # ランダムページで8回まで試す
-    for _ in range(8):
+    # ランダムページを複数試行（偏り防止）
+    for _ in range(10):
         page = random.randint(1, 60)
-        items = list_items(page)
+        items = pick_page(page)
         if items:
             it = random.choice(items)
             caption = re.sub(r"\s+", " ", safe_get(it, "itemCaption"))
+            # ★アフィリンク固定（なければ直URL）
             link = (it.get("affiliateUrl") or it.get("itemUrl") or "").strip()
             return {
                 "title":  safe_get(it, "title"),
@@ -117,29 +113,31 @@ def fetch_book() -> Dict[str, str]:
 
     raise RuntimeError("楽天API: 絵本ジャンルから取得できませんでした")
 
-# -------- OpenAI で本文生成（短文・リンクが見える長さ）--------
+# ------------------------------------------------------------
+# OpenAI で本文生成（140字・最大2文）
+# ------------------------------------------------------------
 def build_post(book: Dict[str, str]) -> str:
+    """
+    X向け紹介文を生成（140字以内・最大2文・URLは本文に含めない）
+    """
     from openai import OpenAI
-
     client = OpenAI(api_key=require_env("OPENAI_API_KEY"))
 
     SYSTEM = (
         "あなたは書店員。日本語でX向けの“短文”紹介文を作る。"
-        "制約: 本文は必ず140字以内（できれば120字）。文は最大2文。"
+        "制約: 本文は必ず140字以内、文は最大2文。"
         "絵文字は0〜1個、ハッシュタグは最大2つ。"
-        "URLは投稿側で最後に別行で付けるため、本文には入れない。"
         "セールス臭は抑え、誠実で温かく。"
-        "読点や冗語を削り、体言止めや箇条書き風で簡潔に。"
-        "必ず誰向け/どのシーンかを1フレーズ添える。"
+        "誰向け/どのシーンかを1フレーズ入れる。"
+        "URLは投稿側で別行に付けるため、本文には含めない。"
         "出力は本文のみ。"
     )
     USER = (
         f"書名:{book['title']}\n"
         f"著者:{book['author']}\n"
-        f"紹介文の種:{book['caption']}\n"
-        f"平均レビュー:{book['ra']}\n"
-        f"レビュー件数:{book['rc']}\n"
-        "出力は本文のみ。"
+        f"紹介の種:{book['caption']}\n"
+        f"平均レビュー:{book['ra']} / 件数:{book['rc']}\n"
+        "条件どおり短く端的に。"
     )
 
     resp = client.chat.completions.create(
@@ -147,25 +145,23 @@ def build_post(book: Dict[str, str]) -> str:
         messages=[{"role": "system", "content": SYSTEM},
                   {"role": "user", "content": USER}],
         temperature=0.7,
-        max_tokens=220,
+        max_tokens=160,
     )
 
-    body = resp.choices[0].message.content.strip()
+    body = (resp.choices[0].message.content or "").strip()
     body = re.sub(r"\s+", " ", body)
-
-    # ← ここを 140 に変更（リンクが確実に見える長さ）
-    MAX_BODY = 140
     if len(body) > MAX_BODY:
         body = body[:MAX_BODY - 1].rstrip() + "…"
 
+    # 改行の次行にURLを出す（リンクの見え方を安定させる）
     if book["url"]:
         return f"{body}\n{book['url']}"
     return body
 
-# -------- X（Twitter）投稿 --------
+# ------------------------------------------------------------
+# X（Twitter）投稿（refresh→access）
+# ------------------------------------------------------------
 def post_to_x(text: str) -> Dict[str, Any] | None:
-    import base64
-
     tw_client_id     = require_env("TW_CLIENT_ID")
     tw_client_secret = require_env("TW_CLIENT_SECRET")
     tw_refresh_token = require_env("TW_REFRESH_TOKEN")
@@ -199,7 +195,7 @@ def post_to_x(text: str) -> Dict[str, Any] | None:
     access_token = token_payload["access_token"]
     new_refresh  = token_payload.get("refresh_token")
 
-    # 新しい refresh_token が返ってきたら GITHUB_OUTPUT へ
+    # 新しい refresh_token が返ってきたら GITHUB_OUTPUT に書く
     if new_refresh:
         try:
             gh_out = os.environ.get("GITHUB_OUTPUT")
@@ -217,8 +213,10 @@ def post_to_x(text: str) -> Dict[str, Any] | None:
     r2 = s.post(
         tweet_url,
         json={"text": text},
-        headers={"Authorization": f"Bearer {access_token}",
-                 "Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
         timeout=25,
     )
     if r2.status_code >= 300:
@@ -227,8 +225,11 @@ def post_to_x(text: str) -> Dict[str, Any] | None:
 
     return r2.json()
 
-# -------- main --------
+# ------------------------------------------------------------
+# main
+# ------------------------------------------------------------
 def main() -> None:
+    # 必須envの存在確認（早期に落として気づく）
     for n in [
         "RAKUTEN_APP_ID",
         "RAKUTEN_AFFILIATE_ID",
@@ -243,8 +244,8 @@ def main() -> None:
     text = build_post(book)
 
     log("POST PREVIEW:\n", text)
-
     res = post_to_x(text)
+
     if res:
         try:
             log("POSTED:", json.dumps(res.get("data", res), ensure_ascii=False))

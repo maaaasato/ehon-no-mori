@@ -63,7 +63,7 @@ def fetch_book() -> Dict[str, str]:
         "formatVersion": 2,
         "hits": 20,
         "availability": 1,                 # 在庫あり
-        "booksGenreId": "001004001",
+        "booksGenreId": "001020004",
         "sort": "reviewCount",
         "elements": "title,author,itemCaption,affiliateUrl,itemUrl,reviewAverage,reviewCount",
     }

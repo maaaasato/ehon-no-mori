@@ -1,67 +1,46 @@
 name: test-post
-
 on:
   workflow_dispatch: {}
-  # 必要なら定期実行も
-  # schedule:
-  #   - cron: "0 13 * * *"   # UTC で毎日 22:00 JST
 
-# gh でリポジトリ Secret を更新するのに必要
 permissions:
   contents: read
-  actions: write
-
-# 同時実行を防止
-concurrency:
-  group: test-post
-  cancel-in-progress: false
+  actions: write   # ← Secret 更新で必要
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-
     steps:
-      - name: Checkout
-      # fetch-depth を 1 にして速く
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests openai
+      - run: pip install requests openai
 
-      - name: Run post script
-        id: post
+      - id: post
         env:
           RAKUTEN_APP_ID:       ${{ secrets.RAKUTEN_APP_ID }}
           RAKUTEN_AFFILIATE_ID: ${{ secrets.RAKUTEN_AFFILIATE_ID }}
           OPENAI_API_KEY:       ${{ secrets.OPENAI_API_KEY }}
-
           TW_CLIENT_ID:         ${{ secrets.TW_CLIENT_ID }}
           TW_CLIENT_SECRET:     ${{ secrets.TW_CLIENT_SECRET }}
           TW_REFRESH_TOKEN:     ${{ secrets.TW_REFRESH_TOKEN }}
         run: |
-          # -u でバッファを無効化してログを即時表示
-          python -u post_picture_book.py
+          python - <<'PY'
+          # ここはあなたの post_picture_book.py の中身（new_refresh_token を stdout へ）
+          # 最後に new_refresh_token を出力したい時だけ print する。
+          # 出力例: print("NEW_REFRESH_TOKEN=xxxxx") など
+          PY
 
-      # Python 側が $GITHUB_OUTPUT に
-      #   new_refresh_token=xxxx
-      # を書いた場合のみ、Secret を回転
+      # もし上のステップで new_refresh_token を標準出力に流せない場合は
+      # python 側で GITHUB_OUTPUT に書く方式にして、
+      # `outputs:` で受け取ってください（下の uses 部には id.post.outputs... を指定）
+
       - name: Update TW_REFRESH_TOKEN secret (if rotated)
-        if: steps.post.outputs.new_refresh_token != ''
-        env:
-          GH_TOKEN: ${{ github.token }}   # gh の認証に必須
-        run: |
-          echo "Rotating TW_REFRESH_TOKEN..."
-          # 値はログに出さない（マスク対象ですが一応安全策）
-          gh secret set TW_REFRESH_TOKEN \
-            --repo "${{ github.repository }}" \
-            --body "${{ steps.post.outputs.new_refresh_token }}"
+        if: ${{ steps.post.outputs.new_refresh_token != '' }}
+        uses: peter-evans/create-or-update-secret@v3
+        with:
+          token: ${{ github.token }}              # ← GITHUB_TOKEN でOK
+          secret-name: TW_REFRESH_TOKEN
+          secret-value: ${{ steps.post.outputs.new_refresh_token }}

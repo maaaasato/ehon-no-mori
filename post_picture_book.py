@@ -63,11 +63,11 @@ def fetch_book() -> Dict[str, str]:
         "formatVersion": 2,
         "hits": 20,
         "availability": 1,                 # 在庫あり
-        "booksGenreId": 1020004,
+        "booksGenreId": "001004001",
         "sort": "reviewCount",
         "elements": "title,author,itemCaption,affiliateUrl,itemUrl,reviewAverage,reviewCount",
     }
-    keywords = ["絵本", "児童書 絵本", "読み聞かせ", "赤ちゃん 絵本", "寝る前 絵本"]
+    #keywords = ["絵本", "児童書 絵本", "読み聞かせ", "赤ちゃん 絵本", "寝る前 絵本"]
 
     s = requests.Session()
     s.headers.update({"User-Agent": USER_AGENT, "Accept": "application/json"})

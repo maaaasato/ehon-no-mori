@@ -21,7 +21,7 @@ import requests
 # ------------------------------------------------------------
 USER_AGENT = "ehon-no-mori-bot/2.1 (+https://github.com/)"
 MAX_BODY = 140
-GENRE_PICTURE = os.getenv("RAKUTEN_GENRE_PICTURE", "001004001")  # 絵本ジャンルID
+GENRE_PICTURE = os.getenv("RAKUTEN_GENRE_PICTURE", "001020004")  # 絵本ジャンルID
 
 def log(*args: Any) -> None:
     print(*args, flush=True)

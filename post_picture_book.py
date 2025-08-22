@@ -73,7 +73,7 @@ def fetch_book() -> Dict[str, str]:
         "hits": 30,
         "availability": 1,                  # 在庫あり
         "booksGenreId": GENRE_PICTURE,      # 絵本に固定
-        "sort": "-reviewCount",             # レビュー多い順（降順）
+        "sort": "reviewCount",             # レビュー多い順（降順）
         # フィルタ用に項目拡張
         "elements": "title,author,itemCaption,affiliateUrl,itemUrl,reviewAverage,reviewCount,seriesName,label,size",
     }

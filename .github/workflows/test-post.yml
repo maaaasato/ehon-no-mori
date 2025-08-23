@@ -1,25 +1,35 @@
 name: test-post
 on:
   workflow_dispatch: {}
+  schedule:
+    # UTC で指定。JST 07:30 / 12:30 / 20:30 相当
+    - cron: '30 22 * * *'  # 07:30 JST
+    - cron: '30 03 * * *'  # 12:30 JST
+    - cron: '30 11 * * *'  # 20:30 JST
 
 permissions:
   actions: write
-  contents: read
+  contents: write   # 履歴ファイルのコミットに必要
+
+concurrency:
+  group: post-ehon
+  cancel-in-progress: false
 
 jobs:
   run:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install deps
-        run: pip install -U requests openai beautifulsoup4 lxml
+        run: pip install -U requests openai
 
-      # 実行（デバッグ環境変数は必要に応じて調整）
       - name: Run script
         id: post
         env:
@@ -29,35 +39,27 @@ jobs:
           TW_CLIENT_ID:         ${{ secrets.TW_CLIENT_ID }}
           TW_CLIENT_SECRET:     ${{ secrets.TW_CLIENT_SECRET }}
           TW_REFRESH_TOKEN:     ${{ secrets.TW_REFRESH_TOKEN }}
-          DEBUG: "1"
-          # 固定IDで検証したいときだけ一時的に使う（例: 138019）
-          # EHONNAVI_ID_FORCE: "138019"
-          # ランダム範囲や試行回数を変えたい場合
-          # EHONNAVI_ID_RANGE: "10000-400000"
-          # EHONNAVI_TRIES: "20"
-        run: |
-          python -u post_picture_book.py
+          # 重複禁止期間（日）と履歴ファイルパス
+          DEDUP_DAYS: "120"
+          POST_HISTORY_PATH: "data/posted_history.json"
+        run: python -u post_picture_book.py
 
-      # 解析用のデータを常に回収（存在しなければ無視）
-      - name: Upload debug artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
+      # 履歴をコミット（変更があるときだけ）
+      - name: Commit post history
+        uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          name: debug-ehonnavi-rakuten
-          path: |
-            /tmp/ehonnavi_pick.html
-            /tmp/rakuten_search_title.json
-            /tmp/rakuten_search_keyword.json
-          if-no-files-found: ignore
+          commit_message: "chore: record posted book [skip ci]"
+          file_pattern: data/posted_history.json
+          commit_user_name: github-actions[bot]
+          commit_user_email: 41898282+github-actions[bot]@users.noreply.github.com
 
-      # 返ってきた new_refresh_token があれば Secrets を更新
+      # refresh_token がローテされたら Secrets を更新
       - name: Update TW_REFRESH_TOKEN secret (if rotated)
         if: steps.post.outputs.new_refresh_token != ''
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}   # repo 権限の PAT（SSO 承認済み）
         run: |
           echo "Rotating TW_REFRESH_TOKEN..."
-          gh auth status
           gh secret set TW_REFRESH_TOKEN \
             --repo "$GITHUB_REPOSITORY" \
             --body "${{ steps.post.outputs.new_refresh_token }}"
